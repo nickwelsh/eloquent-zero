@@ -13,14 +13,22 @@ use NickWelsh\EloquentZero\Tests\Fixtures\Models\GeoThing;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\Group;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\Member;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\NumericAliasThing;
+use NickWelsh\EloquentZero\Tests\Fixtures\Models\RelationExcludedComment;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\ScopedComment;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\StaleBelongsToComment;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\StaleZeroColumnsThing;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\Subscriber;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\TodoItem;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\TodoList;
+use NickWelsh\EloquentZero\Tests\Fixtures\Models\ZeroExcludedComment;
 
 beforeEach(function () {
+    config()->set('app.id', 'eloquent-zero-test');
+    config()->set('eloquent-zero.publication_name', null);
+
+    DB::statement('DROP PUBLICATION IF EXISTS "_eloquent-zero-test_public_0"');
+    DB::statement('DROP PUBLICATION IF EXISTS "custom_zero_publication"');
+
     Schema::dropIfExists('scoped_comments');
     Schema::dropIfExists('blog_posts');
 
@@ -46,6 +54,8 @@ afterEach(function () {
     Schema::dropIfExists('stale_zero_columns_things');
     Schema::dropIfExists('todo_items');
     Schema::dropIfExists('todo_lists');
+    DB::statement('DROP PUBLICATION IF EXISTS "_eloquent-zero-test_public_0"');
+    DB::statement('DROP PUBLICATION IF EXISTS "custom_zero_publication"');
     DB::statement('DROP TYPE IF EXISTS todo_status');
 });
 
@@ -290,6 +300,90 @@ it('warns and skips unsupported non-key columns', function () {
     expect(File::get($outputPath))
         ->toContain("const geoThing = table('geoThings')")
         ->not->toContain('location:');
+});
+
+it('plans publication sql from hidden columns by default', function () {
+    Schema::create('scoped_comments', function (Blueprint $table): void {
+        $table->string('id')->primary();
+        $table->string('blog_post_id');
+        $table->string('title');
+        $table->string('secret_text');
+        $table->foreign('blog_post_id')->references('id')->on('blog_posts');
+    });
+
+    Artisan::call('zero:sync-publication', [
+        '--model' => [BlogPost::class, ScopedComment::class],
+        '--dry-run' => true,
+    ]);
+
+    expect(Artisan::output())
+        ->toContain('DROP PUBLICATION IF EXISTS "_eloquent-zero-test_public_0";')
+        ->toContain('CREATE PUBLICATION "_eloquent-zero-test_public_0" FOR TABLE')
+        ->toContain('"blog_posts"')
+        ->toContain('"scoped_comments"')
+        ->toContain('"blog_post_id"')
+        ->toContain('"title"')
+        ->not->toContain('"secret_text"');
+});
+
+it('uses ZeroExclude instead of hidden columns for publication sync', function () {
+    Schema::create('scoped_comments', function (Blueprint $table): void {
+        $table->string('id')->primary();
+        $table->string('blog_post_id');
+        $table->string('title');
+        $table->string('secret_text');
+        $table->foreign('blog_post_id')->references('id')->on('blog_posts');
+    });
+
+    $this->artisan('zero:sync-publication', [
+        '--model' => [BlogPost::class, ZeroExcludedComment::class],
+        '--dry-run' => true,
+    ])
+        ->expectsOutputToContain('CREATE PUBLICATION "_eloquent-zero-test_public_0" FOR TABLE "blog_posts", "scoped_comments" ("id", "blog_post_id", "secret_text");')
+        ->assertSuccessful();
+});
+
+it('forces required relation columns back into publication', function () {
+    Schema::create('scoped_comments', function (Blueprint $table): void {
+        $table->string('id')->primary();
+        $table->string('blog_post_id');
+        $table->string('title');
+        $table->string('secret_text');
+        $table->foreign('blog_post_id')->references('id')->on('blog_posts');
+    });
+
+    $this->artisan('zero:sync-publication', [
+        '--model' => [BlogPost::class, RelationExcludedComment::class],
+        '--name' => 'custom_zero_publication',
+        '--dry-run' => true,
+    ])
+        ->expectsOutputToContain('Warning: Forcing column [scoped_comments.blog_post_id] into publication because it is required.')
+        ->expectsOutputToContain('CREATE PUBLICATION "custom_zero_publication" FOR TABLE "blog_posts", "scoped_comments" ("id", "blog_post_id", "secret_text");')
+        ->assertSuccessful();
+});
+
+it('creates postgres publication', function () {
+    Schema::create('scoped_comments', function (Blueprint $table): void {
+        $table->string('id')->primary();
+        $table->string('blog_post_id');
+        $table->string('title');
+        $table->string('secret_text');
+        $table->foreign('blog_post_id')->references('id')->on('blog_posts');
+    });
+
+    $this->artisan('zero:sync-publication', [
+        '--model' => [BlogPost::class, ScopedComment::class],
+        '--name' => 'custom_zero_publication',
+    ])
+        ->expectsOutputToContain('CREATE PUBLICATION "custom_zero_publication" FOR TABLE "blog_posts", "scoped_comments" ("id", "blog_post_id", "title");')
+        ->assertSuccessful();
+
+    $publication = DB::selectOne(
+        'select pubname from pg_publication where pubname = ?',
+        ['custom_zero_publication'],
+    );
+
+    expect($publication?->pubname)->toBe('custom_zero_publication');
 });
 
 it('does not invoke arbitrary public model methods while discovering relations', function () {

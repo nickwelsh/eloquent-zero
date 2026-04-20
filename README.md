@@ -7,7 +7,7 @@
 
 `eloquent-zero` generates a typed [Zero](https://zero.rocicorp.dev/) schema from your Laravel Eloquent models and Postgres database.
 
-It reads your models, database columns, primary keys, enum types, and Eloquent relationships, then writes a `schema.ts` file ready for Zero.
+It reads your models, database columns, primary keys, enum types, and Eloquent relationships, then writes a `schema.ts` file ready for Zero. It can also sync a Postgres publication for those models.
 
 > Warning
 > This package is very early. Expect rough edges, missing features, and breaking changes.
@@ -17,6 +17,7 @@ It reads your models, database columns, primary keys, enum types, and Eloquent r
 - generates Zero tables from Eloquent models
 - maps `belongsTo`, `hasOne`, `hasMany`, and `belongsToMany` relationships
 - respects model hidden fields and column allowlists
+- syncs Postgres publication column lists from model metadata
 - supports renaming the emitted Zero schema with a PHP attribute
 - validates that migrations are current before generating
 
@@ -69,6 +70,7 @@ return [
     'use_wayfinder' => false,
     'connection' => null,
     'allow_multiple_connections' => false,
+    'publication_name' => null,
 ];
 ```
 
@@ -98,6 +100,18 @@ Force a connection:
 
 ```bash
 php artisan generate:zero-schema --connection=pgsql
+```
+
+Sync Postgres publication:
+
+```bash
+php artisan zero:sync-publication
+```
+
+Validate publication changes without applying:
+
+```bash
+php artisan zero:sync-publication --dry-run
 ```
 
 ## Example
@@ -187,6 +201,30 @@ class Comment extends Model {}
 ```
 
 If a relation needs a foreign key column that you excluded, `eloquent-zero` will force it back in and emit a warning.
+
+`#[ZeroColumns]` only affects emitted TypeScript schema. It does not change Postgres publication columns.
+
+### `#[ZeroExclude([...])]`
+
+Exclude columns from Zero Postgres publication sync.
+
+```php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use NickWelsh\EloquentZero\Attributes\ZeroExclude;
+
+#[ZeroExclude(['password'])]
+class User extends Model {}
+```
+
+Publication rules:
+
+- default: infer excluded publication columns from model `$hidden`
+- override: if `#[ZeroExclude([...])]` exists, use only that list for publication exclusion
+- safety: required relation columns are forced back into publication with warning
 
 ### `#[ZeroIgnore]`
 

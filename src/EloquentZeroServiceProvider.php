@@ -3,6 +3,7 @@
 namespace NickWelsh\EloquentZero;
 
 use NickWelsh\EloquentZero\Commands\EloquentZeroCommand;
+use NickWelsh\EloquentZero\Commands\SyncZeroPublicationCommand;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 
@@ -18,6 +19,7 @@ class EloquentZeroServiceProvider extends PackageServiceProvider
         $package
             ->name('eloquent-zero')
             ->hasConfigFile()
-            ->hasCommand(EloquentZeroCommand::class);
+            ->hasCommand(EloquentZeroCommand::class)
+            ->hasCommand(SyncZeroPublicationCommand::class);
     }
 }
