@@ -15,5 +15,5 @@ return [
     'use_wayfinder' => false,
     'connection' => null,
     'allow_multiple_connections' => false,
-    'publication_name' => null,
+    'publication_name' => env('ZERO_APP_PUBLICATIONS')
 ];
