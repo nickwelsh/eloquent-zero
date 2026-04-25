@@ -9,6 +9,7 @@ return [
         app_path('Models'),
     ],
     'models' => [],
+    'tables' => [],
     'output_path' => resource_path('js/zero/schema.ts'),
     'table_name_casing' => Casing::Camel,
     'column_name_casing' => Casing::Camel,

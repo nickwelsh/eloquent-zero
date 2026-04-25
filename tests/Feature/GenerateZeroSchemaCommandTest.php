@@ -51,6 +51,7 @@ afterEach(function () {
     Schema::dropIfExists('included_notes');
     Schema::dropIfExists('ignored_notes');
     Schema::dropIfExists('members');
+    Schema::dropIfExists('manual_audit_entries');
     Schema::dropIfExists('model_has_roles');
     Schema::dropIfExists('numeric_alias_things');
     Schema::dropIfExists('polymorphic_users');
@@ -310,6 +311,33 @@ it('warns and skips polymorphic many-to-many relationships', function () {
         ->not->toContain('roles: many(');
 });
 
+it('generates configured tables without models', function () {
+    $outputPath = sys_get_temp_dir().'/eloquent-zero-configured-tables-test.ts';
+
+    File::delete($outputPath);
+
+    Schema::create('manual_audit_entries', function (Blueprint $table): void {
+        $table->string('id')->primary();
+        $table->string('subject_id');
+        $table->string('subject_type');
+        $table->json('metadata')->nullable();
+    });
+
+    config()->set('eloquent-zero.output_path', $outputPath);
+    config()->set('eloquent-zero.tables', [
+        'manual_audit_entries' => ['id', 'subject_id', 'subject_type'],
+    ]);
+
+    $this->artisan('generate:zero-schema')->assertSuccessful();
+
+    expect(File::get($outputPath))
+        ->toContain("const manualAuditEntry = table('manualAuditEntries')")
+        ->toContain("  .from('manual_audit_entries')")
+        ->toContain('subjectId: string()')
+        ->toContain('subjectType: string()')
+        ->not->toContain('metadata');
+});
+
 it('forces required foreign keys back into zero columns allowlists', function () {
     $outputPath = sys_get_temp_dir().'/eloquent-zero-zero-columns-test.ts';
 
@@ -449,6 +477,26 @@ it('creates postgres publication', function () {
     );
 
     expect($publication?->pubname)->toBe('custom_zero_publication');
+});
+
+it('syncs configured tables without models into publication', function () {
+    Schema::create('manual_audit_entries', function (Blueprint $table): void {
+        $table->string('id')->primary();
+        $table->string('subject_id');
+        $table->string('subject_type');
+        $table->json('metadata')->nullable();
+    });
+
+    config()->set('eloquent-zero.tables', [
+        'manual_audit_entries' => ['id', 'subject_id'],
+    ]);
+
+    $this->artisan('zero:sync-publication', [
+        '--name' => 'custom_zero_publication',
+        '--dry-run' => true,
+    ])
+        ->expectsOutputToContain('CREATE PUBLICATION "custom_zero_publication" FOR TABLE "manual_audit_entries" ("id", "subject_id");')
+        ->assertSuccessful();
 });
 
 it('does not invoke arbitrary public model methods while discovering relations', function () {

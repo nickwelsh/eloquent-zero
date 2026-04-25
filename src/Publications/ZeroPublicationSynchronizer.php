@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Database\Eloquent\Relations\MorphToMany;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Database\Migrations\Migrator;
 use Illuminate\Support\Collection;
@@ -36,9 +37,10 @@ final class ZeroPublicationSynchronizer
         OutputStyle $output,
     ): array {
         $models = $this->resolveModels($explicitModels, $output);
+        $configuredTables = $this->configuredTables();
 
-        if ($models === []) {
-            throw new RuntimeException('No models selected for publication sync.');
+        if ($models === [] && $configuredTables === []) {
+            throw new RuntimeException('No models or tables selected for publication sync.');
         }
 
         $connectionName = $this->resolveConnectionName($models, $forcedConnection);
@@ -73,6 +75,20 @@ final class ZeroPublicationSynchronizer
                 connectionName: $connectionName,
                 requiredColumns: $requiredColumnsByTable[$pivotTable] ?? [],
                 output: $output,
+            );
+        }
+
+        foreach ($configuredTables as $configuredTable) {
+            if (collect($tablePlans)->contains(fn (array $tablePlan): bool => $tablePlan['table'] === $configuredTable['name'])) {
+                continue;
+            }
+
+            $tablePlans[] = $this->tablePlanForTable(
+                tableName: $configuredTable['name'],
+                connectionName: $connectionName,
+                requiredColumns: [],
+                output: $output,
+                includedColumns: $configuredTable['columns'],
             );
         }
 
@@ -351,6 +367,7 @@ final class ZeroPublicationSynchronizer
                 return $this->relationMethods($model)
                     ->map(fn (ReflectionMethod $method): mixed => $model->{$method->getName()}())
                     ->filter(fn (mixed $relation): bool => $relation instanceof BelongsToMany)
+                    ->reject(fn (BelongsToMany $relation): bool => $relation instanceof MorphToMany)
                     ->map(fn (BelongsToMany $relation): string => $relation->getTable());
             })
             ->unique()
@@ -394,12 +411,58 @@ final class ZeroPublicationSynchronizer
      * @param  array<int, string>  $requiredColumns
      * @return array{table: string, sql: string}
      */
-    private function tablePlanForTable(string $tableName, ?string $connectionName, array $requiredColumns, OutputStyle $output): array
+    private function tablePlanForTable(string $tableName, ?string $connectionName, array $requiredColumns, OutputStyle $output, ?array $includedColumns = null): array
     {
         $columns = Schema::connection($connectionName)->getColumns($tableName);
         $columnNames = array_column($columns, 'name');
 
-        return $this->buildTablePlan($tableName, $columnNames, [], $requiredColumns, $output);
+        if ($includedColumns !== null) {
+            foreach ($includedColumns as $includedColumn) {
+                if (! in_array($includedColumn, $columnNames, true)) {
+                    throw new RuntimeException("Configured table [{$tableName}] references missing column [{$includedColumn}].");
+                }
+            }
+        }
+
+        $excludedColumns = $includedColumns === null ? [] : array_values(array_diff($columnNames, $includedColumns));
+
+        return $this->buildTablePlan($tableName, $columnNames, $excludedColumns, $requiredColumns, $output);
+    }
+
+    /**
+     * @return array<int, array{name: string, columns: array<int, string>|null}>
+     */
+    private function configuredTables(): array
+    {
+        $tables = config('eloquent-zero.tables', []);
+
+        if (! is_array($tables)) {
+            return [];
+        }
+
+        return collect($tables)
+            ->map(function (mixed $columns, int|string $table): ?array {
+                if (is_int($table) && is_string($columns)) {
+                    return ['name' => $columns, 'columns' => null];
+                }
+
+                if (! is_string($table)) {
+                    return null;
+                }
+
+                if ($columns === true) {
+                    return ['name' => $table, 'columns' => null];
+                }
+
+                if (is_array($columns)) {
+                    return ['name' => $table, 'columns' => array_values(array_filter($columns, 'is_string'))];
+                }
+
+                return null;
+            })
+            ->filter()
+            ->values()
+            ->all();
     }
 
     /**

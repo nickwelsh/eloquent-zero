@@ -64,6 +64,7 @@ return [
         app_path('Models'),
     ],
     'models' => [],
+    'tables' => [],
     'output_path' => resource_path('js/zero/schema.ts'),
     'table_name_casing' => Casing::Camel,
     'column_name_casing' => Casing::Camel,
@@ -272,6 +273,17 @@ Models can come from:
 - `--model` CLI arguments
 
 `model_search_directories` accepts plain directories and glob patterns, for example `base_path('modules/*/Models')`.
+
+Tables without Eloquent models can come from `tables` config:
+
+```php
+'tables' => [
+    'model_has_roles' => true,
+    'model_has_permissions' => ['permission_id', 'model_type', 'model_id'],
+],
+```
+
+Use `true` for all columns. Use an array to allow only listed columns. These tables are added to generated Zero schema and Postgres publication sync.
 
 ## Name casing
 

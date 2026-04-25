@@ -41,9 +41,10 @@ final class ZeroSchemaGenerator
         OutputStyle $output,
     ): GeneratedSchemaResult {
         $models = $this->resolveModels($explicitModels, $output);
+        $configuredTables = $this->configuredTables();
 
-        if ($models === []) {
-            throw new RuntimeException('No models selected for generation.');
+        if ($models === [] && $configuredTables === []) {
+            throw new RuntimeException('No models or tables selected for generation.');
         }
 
         $connectionName = $this->resolveConnectionName($models, $forcedConnection);
@@ -66,6 +67,21 @@ final class ZeroSchemaGenerator
                 $enumTypes,
                 $output,
                 $requiredColumnsByTable[$model->getTable()] ?? [],
+            );
+        }
+
+        foreach ($configuredTables as $configuredTable) {
+            if (collect($tables)->contains(fn (array $table): bool => $table['serverName'] === $configuredTable['name'])) {
+                continue;
+            }
+
+            $tables[] = $this->buildTableDefinitionForTable(
+                $configuredTable['name'],
+                $connectionName,
+                $enumTypes,
+                $output,
+                allowedColumns: $configuredTable['columns'],
+                allowedColumnsSource: 'Configured table',
             );
         }
 
@@ -138,6 +154,12 @@ final class ZeroSchemaGenerator
             return $forcedConnection;
         }
 
+        $configuredConnection = config('eloquent-zero.connection');
+
+        if (is_string($configuredConnection) && $configuredConnection !== '') {
+            return $configuredConnection;
+        }
+
         $connectionNames = array_values(array_unique(array_map(
             static fn (Model $model): string => $model->getConnectionName() ?: config('database.default'),
             $models,
@@ -148,6 +170,42 @@ final class ZeroSchemaGenerator
         }
 
         return $connectionNames[0] ?? null;
+    }
+
+    /**
+     * @return array<int, array{name: string, columns: array<int, string>|null}>
+     */
+    private function configuredTables(): array
+    {
+        $tables = config('eloquent-zero.tables', []);
+
+        if (! is_array($tables)) {
+            return [];
+        }
+
+        return collect($tables)
+            ->map(function (mixed $columns, int|string $table): ?array {
+                if (is_int($table) && is_string($columns)) {
+                    return ['name' => $columns, 'columns' => null];
+                }
+
+                if (! is_string($table)) {
+                    return null;
+                }
+
+                if ($columns === true) {
+                    return ['name' => $table, 'columns' => null];
+                }
+
+                if (is_array($columns)) {
+                    return ['name' => $table, 'columns' => array_values(array_filter($columns, 'is_string'))];
+                }
+
+                return null;
+            })
+            ->filter()
+            ->values()
+            ->all();
     }
 
     /**
@@ -187,6 +245,7 @@ final class ZeroSchemaGenerator
         ?array $allowedColumns = null,
         array $requiredColumns = [],
         ?string $schemaName = null,
+        string $allowedColumnsSource = 'ZeroColumns',
     ): array {
         $schema = Schema::connection($connectionName);
         $columns = $schema->getColumns($tableName);
@@ -196,7 +255,7 @@ final class ZeroSchemaGenerator
         if ($allowedColumns !== null) {
             foreach ($allowedColumns as $allowedColumn) {
                 if (! in_array($allowedColumn, $columnNames, true)) {
-                    throw new RuntimeException("ZeroColumns on [{$tableName}] references missing column [{$allowedColumn}].");
+                    throw new RuntimeException("{$allowedColumnsSource} on [{$tableName}] references missing column [{$allowedColumn}].");
                 }
             }
         }
