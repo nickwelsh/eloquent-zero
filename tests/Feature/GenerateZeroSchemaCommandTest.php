@@ -13,6 +13,8 @@ use NickWelsh\EloquentZero\Tests\Fixtures\Models\GeoThing;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\Group;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\Member;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\NumericAliasThing;
+use NickWelsh\EloquentZero\Tests\Fixtures\Models\PolymorphicRole;
+use NickWelsh\EloquentZero\Tests\Fixtures\Models\PolymorphicUser;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\RelationExcludedComment;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\ScopedComment;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\StaleBelongsToComment;
@@ -49,7 +51,10 @@ afterEach(function () {
     Schema::dropIfExists('included_notes');
     Schema::dropIfExists('ignored_notes');
     Schema::dropIfExists('members');
+    Schema::dropIfExists('model_has_roles');
     Schema::dropIfExists('numeric_alias_things');
+    Schema::dropIfExists('polymorphic_users');
+    Schema::dropIfExists('roles');
     Schema::dropIfExists('subscribers');
     Schema::dropIfExists('stale_belongs_to_comments');
     Schema::dropIfExists('stale_zero_columns_things');
@@ -267,6 +272,42 @@ it('generates many-to-many relationships from belongs-to-many relations', functi
         ->toContain('destSchema: group')
         ->toContain("destField: ['id']")
         ->toContain('members: many(');
+});
+
+it('warns and skips polymorphic many-to-many relationships', function () {
+    $outputPath = sys_get_temp_dir().'/eloquent-zero-polymorphic-many-to-many-test.ts';
+
+    File::delete($outputPath);
+
+    Schema::create('polymorphic_users', function (Blueprint $table): void {
+        $table->string('id')->primary();
+    });
+
+    Schema::create('roles', function (Blueprint $table): void {
+        $table->string('id')->primary();
+    });
+
+    Schema::create('model_has_roles', function (Blueprint $table): void {
+        $table->string('role_id');
+        $table->string('model_type');
+        $table->string('model_id');
+        $table->primary(['role_id', 'model_id', 'model_type']);
+        $table->foreign('role_id')->references('id')->on('roles');
+    });
+
+    config()->set('eloquent-zero.output_path', $outputPath);
+
+    $this->artisan('generate:zero-schema', [
+        '--model' => [PolymorphicUser::class, PolymorphicRole::class],
+    ])
+        ->expectsOutputToContain('Warning: Unsupported polymorphic relation [PolymorphicUser::roles]; Zero relationships cannot express morph type constraints.')
+        ->assertSuccessful();
+
+    expect(File::get($outputPath))
+        ->toContain("const polymorphicUser = table('polymorphicUsers')")
+        ->toContain("const role = table('roles')")
+        ->not->toContain("const modelHasRole = table('modelHasRoles')")
+        ->not->toContain('roles: many(');
 });
 
 it('forces required foreign keys back into zero columns allowlists', function () {

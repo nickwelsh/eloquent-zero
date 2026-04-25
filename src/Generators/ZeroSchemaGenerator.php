@@ -9,6 +9,9 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Database\Eloquent\Relations\MorphOneOrMany;
+use Illuminate\Database\Eloquent\Relations\MorphTo;
+use Illuminate\Database\Eloquent\Relations\MorphToMany;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Database\Migrations\Migrator;
 use Illuminate\Support\Collection;
@@ -594,12 +597,26 @@ final class ZeroSchemaGenerator
         OutputStyle $output,
     ): ?array {
         return match (true) {
+            $relation instanceof MorphTo || $relation instanceof MorphOneOrMany || $relation instanceof MorphToMany => tap(null, fn () => $this->emitWarning($output, "Unsupported polymorphic relation [{$this->relationLabel($relation, $relationName)}]; Zero relationships cannot express morph type constraints.")),
             $relation instanceof BelongsTo => $this->buildBelongsToRelation($relationName, $relation, $selectedTables, $tableMap, $connectionName, $output),
             $relation instanceof HasMany => $this->buildHasOneOrManyRelation($relationName, $relation, 'many', $selectedTables, $tableMap, $connectionName, $output),
             $relation instanceof HasOne => $this->buildHasOneOrManyRelation($relationName, $relation, 'one', $selectedTables, $tableMap, $connectionName, $output),
             $relation instanceof BelongsToMany => $this->buildBelongsToManyRelation($relationName, $relation, $selectedTables, $tableMap, $connectionName, $output),
             default => tap(null, fn () => $this->emitWarning($output, 'Unsupported relation type ['.get_class($relation)."] for [{$relationName}].")),
         };
+    }
+
+    private function relationLabel(Relation $relation, string $relationName): string
+    {
+        if ($relation instanceof BelongsTo) {
+            return class_basename($relation->getChild()).'::'.$relationName;
+        }
+
+        if ($relation instanceof BelongsToMany || $relation instanceof HasOne || $relation instanceof HasMany || $relation instanceof MorphOneOrMany) {
+            return class_basename($relation->getParent()).'::'.$relationName;
+        }
+
+        return $relationName;
     }
 
     /**
@@ -913,6 +930,10 @@ final class ZeroSchemaGenerator
                     continue;
                 }
 
+                if ($relation instanceof MorphToMany) {
+                    continue;
+                }
+
                 $pivotTable = $relation->getTable();
 
                 if (in_array($pivotTable, $tableNames, true)) {
@@ -1082,6 +1103,10 @@ final class ZeroSchemaGenerator
                 }
 
                 if ($relation instanceof BelongsToMany) {
+                    if ($relation instanceof MorphToMany) {
+                        continue;
+                    }
+
                     $requiredColumns[$relation->getTable()][] = $relation->getForeignPivotKeyName();
                     $requiredColumns[$relation->getTable()][] = $relation->getRelatedPivotKeyName();
                 }
