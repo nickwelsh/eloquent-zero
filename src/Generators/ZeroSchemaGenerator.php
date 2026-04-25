@@ -941,7 +941,10 @@ final class ZeroSchemaGenerator
     private function discoverModels(array $directories): array
     {
         return collect($directories)
-            ->filter(fn (?string $directory): bool => is_string($directory) && is_dir($directory))
+            ->filter(fn (?string $directory): bool => is_string($directory))
+            ->flatMap(fn (string $directory): array => $this->expandModelSearchDirectory($directory))
+            ->filter(fn (string $directory): bool => is_dir($directory))
+            ->unique()
             ->flatMap(function (string $directory): array {
                 return collect(File::allFiles($directory))
                     ->filter(fn ($file): bool => $file->getExtension() === 'php')
@@ -960,6 +963,18 @@ final class ZeroSchemaGenerator
             ->unique()
             ->values()
             ->all();
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function expandModelSearchDirectory(string $directory): array
+    {
+        if (! strpbrk($directory, '*?[')) {
+            return [$directory];
+        }
+
+        return File::glob($directory) ?: [];
     }
 
     private function extractClassName(string $path): ?string

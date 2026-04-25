@@ -44,6 +44,7 @@ afterEach(function () {
     Schema::dropIfExists('group_member');
     Schema::dropIfExists('groups');
     Schema::dropIfExists('geo_things');
+    Schema::dropIfExists('glob_notes');
     Schema::dropIfExists('dangerous_method_models');
     Schema::dropIfExists('included_notes');
     Schema::dropIfExists('ignored_notes');
@@ -183,6 +184,29 @@ it('discovers models from configured directories and skips ignored models in opt
     expect($contents)
         ->toContain("const includedNote = table('includedNotes')")
         ->not->toContain("const ignoredNote = table('ignoredNotes')");
+});
+
+it('discovers models from configured glob directories', function () {
+    $outputPath = sys_get_temp_dir().'/eloquent-zero-glob-discovery-test.ts';
+
+    File::delete($outputPath);
+
+    Schema::create('glob_notes', function (Blueprint $table): void {
+        $table->string('id')->primary();
+        $table->string('body');
+    });
+
+    config()->set('eloquent-zero.output_path', $outputPath);
+    config()->set('eloquent-zero.mode', Mode::OptOut);
+    config()->set('eloquent-zero.model_search_directories', [
+        __DIR__.'/../Fixtures/DiscoveryModules/*/Models',
+    ]);
+    config()->set('eloquent-zero.models', []);
+
+    $this->artisan('generate:zero-schema')->assertSuccessful();
+
+    expect(File::get($outputPath))
+        ->toContain("const globNote = table('globNotes')");
 });
 
 it('falls back to a single usable unique index when no primary key exists', function () {

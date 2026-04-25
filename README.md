@@ -271,6 +271,8 @@ Models can come from:
 - explicit `models` config entries
 - `--model` CLI arguments
 
+`model_search_directories` accepts plain directories and glob patterns, for example `base_path('modules/*/Models')`.
+
 ## Name casing
 
 By default, table and column names are emitted in camelCase.
