@@ -205,6 +205,45 @@ If a relation needs a foreign key column that you excluded, `eloquent-zero` will
 
 `#[ZeroColumns]` only affects emitted TypeScript schema. It does not change Postgres publication columns.
 
+### `#[ZeroJson('column', ...)]`
+
+Type a JSON or JSONB column with a custom TypeScript type.
+
+```php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use NickWelsh\EloquentZero\Attributes\ZeroJson;
+
+#[ZeroJson('metadata', type: 'RelationMetadata', import: '@/types/crm')]
+class PartyRelation extends Model {}
+```
+
+That generates:
+
+```ts
+import type { RelationMetadata } from '@/types/crm';
+
+metadata: json<RelationMetadata>()
+```
+
+When `use_wayfinder` is enabled, you may pass a PHP class without an import:
+
+```php
+#[ZeroJson('metadata', App\Data\RelationMetadata::class)]
+class PartyRelation extends Model {}
+```
+
+That generates:
+
+```ts
+metadata: json<App.Data.RelationMetadata>()
+```
+
+If `import` is set, the imported TypeScript type is always used, even when `use_wayfinder` is enabled. Without `use_wayfinder`, `import` is required.
+
 ### `#[ZeroExclude([...])]`
 
 Exclude columns from Zero Postgres publication sync.

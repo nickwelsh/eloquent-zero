@@ -21,6 +21,7 @@ use Illuminate\Support\Str;
 use NickWelsh\EloquentZero\Attributes\ZeroColumns;
 use NickWelsh\EloquentZero\Attributes\ZeroGenerate;
 use NickWelsh\EloquentZero\Attributes\ZeroIgnore;
+use NickWelsh\EloquentZero\Attributes\ZeroJson;
 use NickWelsh\EloquentZero\Attributes\ZeroName;
 use NickWelsh\EloquentZero\Support\Casing;
 use NickWelsh\EloquentZero\Support\Mode;
@@ -210,7 +211,7 @@ final class ZeroSchemaGenerator
 
     /**
      * @param  array<string, list<string>>  $enumTypes
-     * @return array{name: string, variable: string, serverName: string, columns: array<int, array{name: string, serverName: string, type: string, optional: bool}>, primaryKey: array<int, string>}
+     * @return array{name: string, variable: string, serverName: string, columns: array<int, array{name: string, serverName: string, type: string, optional: bool}>, primaryKey: array<int, string>, imports: array<string, array<int, string>>}
      */
     private function buildTableDefinition(Model $model, ?string $connectionName, array $enumTypes, OutputStyle $output, array $requiredColumns = []): array
     {
@@ -224,6 +225,7 @@ final class ZeroSchemaGenerator
             $this->allowedColumnsForModel($model),
             $requiredColumns,
             $this->schemaNameForModel($model),
+            jsonTypes: $this->jsonTypesForModel($model),
         );
     }
 
@@ -233,7 +235,8 @@ final class ZeroSchemaGenerator
      * @param  array<string, mixed>  $casts
      * @param  array<int, string>|null  $allowedColumns
      * @param  array<int, string>  $requiredColumns
-     * @return array{name: string, variable: string, serverName: string, columns: array<int, array{name: string, serverName: string, type: string, optional: bool}>, primaryKey: array<int, string>}
+     * @param  array<string, array{type: string, import: string|null}>  $jsonTypes
+     * @return array{name: string, variable: string, serverName: string, columns: array<int, array{name: string, serverName: string, type: string, optional: bool}>, primaryKey: array<int, string>, imports: array<string, array<int, string>>}
      */
     private function buildTableDefinitionForTable(
         string $tableName,
@@ -246,6 +249,7 @@ final class ZeroSchemaGenerator
         array $requiredColumns = [],
         ?string $schemaName = null,
         string $allowedColumnsSource = 'ZeroColumns',
+        array $jsonTypes = [],
     ): array {
         $schema = Schema::connection($connectionName);
         $columns = $schema->getColumns($tableName);
@@ -257,6 +261,18 @@ final class ZeroSchemaGenerator
                 if (! in_array($allowedColumn, $columnNames, true)) {
                     throw new RuntimeException("{$allowedColumnsSource} on [{$tableName}] references missing column [{$allowedColumn}].");
                 }
+            }
+        }
+
+        foreach ($jsonTypes as $jsonColumn => $jsonType) {
+            $column = collect($columns)->firstWhere('name', $jsonColumn);
+
+            if ($column === null) {
+                throw new RuntimeException("ZeroJson on [{$tableName}] references missing column [{$jsonColumn}].");
+            }
+
+            if (! in_array($column['type_name'], ['json', 'jsonb'], true)) {
+                throw new RuntimeException("ZeroJson on [{$tableName}.{$jsonColumn}] references non-JSON column [{$column['type_name']}].");
             }
         }
 
@@ -296,7 +312,7 @@ final class ZeroSchemaGenerator
             }
 
             try {
-                $type = $this->resolveColumnType($casts, $tableName, $column, $enumTypes, $output);
+                $type = $this->resolveColumnType($casts, $tableName, $column, $enumTypes, $output, $jsonTypes);
             } catch (RuntimeException $exception) {
                 if ($isRequired) {
                     throw $exception;
@@ -324,6 +340,7 @@ final class ZeroSchemaGenerator
                 fn (string $column): string => $this->transformName($column, config('eloquent-zero.column_name_casing')),
                 $primaryKey,
             ),
+            'imports' => $this->importsForJsonTypes($jsonTypes),
         ];
     }
 
@@ -355,7 +372,7 @@ final class ZeroSchemaGenerator
      * @param  array{name: string, type: string, type_name: string, nullable: bool, default: mixed, auto_increment: bool, comment: ?string, generation: ?array}  $column
      * @param  array<string, list<string>>  $enumTypes
      */
-    private function resolveColumnType(array $casts, string $tableName, array $column, array $enumTypes, OutputStyle $output): string
+    private function resolveColumnType(array $casts, string $tableName, array $column, array $enumTypes, OutputStyle $output, array $jsonTypes = []): string
     {
         $cast = $casts[$column['name']] ?? null;
 
@@ -388,6 +405,22 @@ final class ZeroSchemaGenerator
 
         if (array_key_exists($column['type_name'], $enumTypes)) {
             return 'enumeration<'.$this->renderEnumerationType($enumTypes[$column['type_name']]).'>()';
+        }
+
+        if (in_array($column['type_name'], ['json', 'jsonb'], true)) {
+            $jsonType = $jsonTypes[$column['name']] ?? null;
+
+            if ($jsonType !== null) {
+                return "json<{$jsonType['type']}>()";
+            }
+
+            if (config('eloquent-zero.use_wayfinder', false) && is_string($cast)) {
+                $castClass = Str::before($cast, ':');
+
+                if (class_exists($castClass)) {
+                    return 'json<'.str_replace('\\', '.', $castClass).'>()';
+                }
+            }
         }
 
         return $this->mapScalarColumnType($column['type_name']);
@@ -433,6 +466,49 @@ final class ZeroSchemaGenerator
     }
 
     /**
+     * @param  array<string, array{type: string, import: string|null}>  $jsonTypes
+     * @return array<string, array<int, string>>
+     */
+    private function importsForJsonTypes(array $jsonTypes): array
+    {
+        $imports = [];
+
+        foreach ($jsonTypes as $jsonType) {
+            if ($jsonType['import'] === null) {
+                continue;
+            }
+
+            $imports[$jsonType['import']][] = $jsonType['type'];
+        }
+
+        return collect($imports)
+            ->map(fn (array $types): array => array_values(array_unique($types)))
+            ->all();
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $tables
+     * @return array<int, string>
+     */
+    private function renderTypeImports(array $tables): array
+    {
+        $imports = [];
+
+        foreach ($tables as $table) {
+            foreach ($table['imports'] ?? [] as $source => $types) {
+                foreach ($types as $type) {
+                    $imports[$source][] = $type;
+                }
+            }
+        }
+
+        return collect($imports)
+            ->map(fn (array $types, string $source): string => 'import type { '.implode(', ', array_values(array_unique($types)))." } from '{$source}';")
+            ->values()
+            ->all();
+    }
+
+    /**
      * @param  array<int, array<string, mixed>>  $tables
      * @param  array<int, array<string, mixed>>  $relationships
      */
@@ -444,8 +520,13 @@ final class ZeroSchemaGenerator
             '',
             "import { createBuilder, createSchema, table, string, number, boolean, json, enumeration, relationships } from '@rocicorp/zero';",
             "import type { Row } from '@rocicorp/zero';",
-            '',
         ];
+
+        foreach ($this->renderTypeImports($tables) as $importLine) {
+            $lines[] = $importLine;
+        }
+
+        $lines[] = '';
 
         foreach ($tables as $table) {
             $lines[] = "const {$table['variable']} = table('{$table['name']}')";
@@ -1192,6 +1273,53 @@ final class ZeroSchemaGenerator
         $instance = $attributes[0]->newInstance();
 
         return $instance->columns;
+    }
+
+    /**
+     * @return array<string, array{type: string, import: string|null}>
+     */
+    private function jsonTypesForModel(Model $model): array
+    {
+        $attributes = (new ReflectionClass($model))->getAttributes(ZeroJson::class);
+        $jsonTypes = [];
+
+        foreach ($attributes as $attribute) {
+            /** @var ZeroJson $instance */
+            $instance = $attribute->newInstance();
+
+            if (array_key_exists($instance->column, $jsonTypes)) {
+                throw new RuntimeException("Duplicate ZeroJson definition for [{$model->getTable()}.{$instance->column}].");
+            }
+
+            if ($instance->import !== null) {
+                $jsonTypes[$instance->column] = [
+                    'type' => $this->typescriptImportName($instance->type),
+                    'import' => $instance->import,
+                ];
+
+                continue;
+            }
+
+            if (! config('eloquent-zero.use_wayfinder', false)) {
+                throw new RuntimeException("ZeroJson on [{$model->getTable()}.{$instance->column}] requires an import when use_wayfinder is false.");
+            }
+
+            $jsonTypes[$instance->column] = [
+                'type' => str_replace('\\', '.', $instance->type),
+                'import' => null,
+            ];
+        }
+
+        return $jsonTypes;
+    }
+
+    private function typescriptImportName(string $type): string
+    {
+        if (str_contains($type, '\\')) {
+            return class_basename($type);
+        }
+
+        return $type;
     }
 
     private function schemaNameForModel(Model $model): string

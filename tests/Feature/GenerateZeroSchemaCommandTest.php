@@ -9,9 +9,14 @@ use NickWelsh\EloquentZero\Support\Mode;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\AliasedBlogPost;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\BlogPost;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\DangerousMethodModel;
+use NickWelsh\EloquentZero\Tests\Fixtures\Models\DuplicateJsonTypedThing;
+use NickWelsh\EloquentZero\Tests\Fixtures\Models\ExplicitJsonTypeBeatsCastThing;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\GeoThing;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\Group;
+use NickWelsh\EloquentZero\Tests\Fixtures\Models\JsonCastThing;
+use NickWelsh\EloquentZero\Tests\Fixtures\Models\JsonTypedThing;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\Member;
+use NickWelsh\EloquentZero\Tests\Fixtures\Models\NonJsonTypedThing;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\NumericAliasThing;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\PolymorphicRole;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\PolymorphicUser;
@@ -22,11 +27,13 @@ use NickWelsh\EloquentZero\Tests\Fixtures\Models\StaleZeroColumnsThing;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\Subscriber;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\TodoItem;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\TodoList;
+use NickWelsh\EloquentZero\Tests\Fixtures\Models\WayfinderJsonTypedThing;
 use NickWelsh\EloquentZero\Tests\Fixtures\Models\ZeroExcludedComment;
 
 beforeEach(function () {
     config()->set('app.id', 'eloquent-zero-test');
     config()->set('eloquent-zero.publication_name', null);
+    config()->set('eloquent-zero.use_wayfinder', false);
 
     DB::statement('DROP PUBLICATION IF EXISTS "_eloquent-zero-test_public_0"');
     DB::statement('DROP PUBLICATION IF EXISTS "custom_zero_publication"');
@@ -50,6 +57,7 @@ afterEach(function () {
     Schema::dropIfExists('dangerous_method_models');
     Schema::dropIfExists('included_notes');
     Schema::dropIfExists('ignored_notes');
+    Schema::dropIfExists('json_typed_things');
     Schema::dropIfExists('members');
     Schema::dropIfExists('manual_audit_entries');
     Schema::dropIfExists('model_has_roles');
@@ -537,6 +545,160 @@ it('maps postgres numeric aliases like int8 to number columns', function () {
 
     expect(File::get($outputPath))
         ->toContain('counter: number()');
+});
+
+it('generates imported custom json column types', function () {
+    $outputPath = sys_get_temp_dir().'/eloquent-zero-json-type-test.ts';
+
+    File::delete($outputPath);
+
+    Schema::create('json_typed_things', function (Blueprint $table): void {
+        $table->string('id')->primary();
+        $table->json('metadata')->nullable();
+        $table->string('name');
+    });
+
+    config()->set('eloquent-zero.output_path', $outputPath);
+
+    $this->artisan('generate:zero-schema', [
+        '--model' => [JsonTypedThing::class],
+    ])->assertSuccessful();
+
+    expect(File::get($outputPath))
+        ->toContain("import type { RelationMetadata } from '@/types/crm';")
+        ->toContain('metadata: json<RelationMetadata>().optional()');
+});
+
+it('uses imported json types even when wayfinder is enabled', function () {
+    $outputPath = sys_get_temp_dir().'/eloquent-zero-json-import-wayfinder-test.ts';
+
+    File::delete($outputPath);
+
+    Schema::create('json_typed_things', function (Blueprint $table): void {
+        $table->string('id')->primary();
+        $table->json('metadata')->nullable();
+        $table->string('name');
+    });
+
+    config()->set('eloquent-zero.output_path', $outputPath);
+    config()->set('eloquent-zero.use_wayfinder', true);
+
+    $this->artisan('generate:zero-schema', [
+        '--model' => [JsonTypedThing::class],
+    ])->assertSuccessful();
+
+    expect(File::get($outputPath))
+        ->toContain("import type { RelationMetadata } from '@/types/crm';")
+        ->toContain('metadata: json<RelationMetadata>().optional()')
+        ->not->toContain('json<NickWelsh');
+});
+
+it('generates wayfinder custom json column types', function () {
+    $outputPath = sys_get_temp_dir().'/eloquent-zero-json-wayfinder-test.ts';
+
+    File::delete($outputPath);
+
+    Schema::create('json_typed_things', function (Blueprint $table): void {
+        $table->string('id')->primary();
+        $table->json('metadata')->nullable();
+        $table->string('name');
+    });
+
+    config()->set('eloquent-zero.output_path', $outputPath);
+    config()->set('eloquent-zero.use_wayfinder', true);
+
+    $this->artisan('generate:zero-schema', [
+        '--model' => [WayfinderJsonTypedThing::class],
+    ])->assertSuccessful();
+
+    expect(File::get($outputPath))
+        ->toContain('metadata: json<NickWelsh.EloquentZero.Tests.Fixtures.Types.RelationMetadata>().optional()')
+        ->not->toContain('import type { RelationMetadata }');
+});
+
+it('throws when custom json class type has no import and wayfinder is disabled', function () {
+    Schema::create('json_typed_things', function (Blueprint $table): void {
+        $table->string('id')->primary();
+        $table->json('metadata')->nullable();
+        $table->string('name');
+    });
+
+    expect(fn () => Artisan::call('generate:zero-schema', [
+        '--model' => [WayfinderJsonTypedThing::class],
+        '--path' => sys_get_temp_dir().'/eloquent-zero-json-no-import-test.ts',
+    ]))->toThrow(RuntimeException::class, 'ZeroJson on [json_typed_things.metadata] requires an import when use_wayfinder is false.');
+});
+
+it('throws when custom json type references non-json column', function () {
+    Schema::create('json_typed_things', function (Blueprint $table): void {
+        $table->string('id')->primary();
+        $table->json('metadata')->nullable();
+        $table->string('name');
+    });
+
+    expect(fn () => Artisan::call('generate:zero-schema', [
+        '--model' => [NonJsonTypedThing::class],
+        '--path' => sys_get_temp_dir().'/eloquent-zero-json-non-json-test.ts',
+    ]))->toThrow(RuntimeException::class, 'ZeroJson on [json_typed_things.name] references non-JSON column [varchar].');
+});
+
+it('throws when custom json type is duplicated for a column', function () {
+    Schema::create('json_typed_things', function (Blueprint $table): void {
+        $table->string('id')->primary();
+        $table->json('metadata')->nullable();
+        $table->string('name');
+    });
+
+    expect(fn () => Artisan::call('generate:zero-schema', [
+        '--model' => [DuplicateJsonTypedThing::class],
+        '--path' => sys_get_temp_dir().'/eloquent-zero-json-duplicate-test.ts',
+    ]))->toThrow(RuntimeException::class, 'Duplicate ZeroJson definition for [json_typed_things.metadata].');
+});
+
+it('infers json column types from class casts when wayfinder is enabled', function () {
+    $outputPath = sys_get_temp_dir().'/eloquent-zero-json-cast-wayfinder-test.ts';
+
+    File::delete($outputPath);
+
+    Schema::create('json_typed_things', function (Blueprint $table): void {
+        $table->string('id')->primary();
+        $table->json('metadata')->nullable();
+        $table->string('name');
+    });
+
+    config()->set('eloquent-zero.output_path', $outputPath);
+    config()->set('eloquent-zero.use_wayfinder', true);
+
+    $this->artisan('generate:zero-schema', [
+        '--model' => [JsonCastThing::class],
+    ])->assertSuccessful();
+
+    expect(File::get($outputPath))
+        ->toContain('metadata: json<NickWelsh.EloquentZero.Tests.Fixtures.Types.SettingsData>().optional()');
+});
+
+it('prefers explicit custom json types over cast inference', function () {
+    $outputPath = sys_get_temp_dir().'/eloquent-zero-json-explicit-beats-cast-test.ts';
+
+    File::delete($outputPath);
+
+    Schema::create('json_typed_things', function (Blueprint $table): void {
+        $table->string('id')->primary();
+        $table->json('metadata')->nullable();
+        $table->string('name');
+    });
+
+    config()->set('eloquent-zero.output_path', $outputPath);
+    config()->set('eloquent-zero.use_wayfinder', true);
+
+    $this->artisan('generate:zero-schema', [
+        '--model' => [ExplicitJsonTypeBeatsCastThing::class],
+    ])->assertSuccessful();
+
+    expect(File::get($outputPath))
+        ->toContain("import type { RelationMetadata } from '@/types/crm';")
+        ->toContain('metadata: json<RelationMetadata>().optional()')
+        ->not->toContain('SettingsData');
 });
 
 it('throws when a declared relation no longer matches database columns', function () {
