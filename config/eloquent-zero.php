@@ -13,6 +13,8 @@ return [
     'output_path' => resource_path('js/zero/schema.ts'),
     'table_name_casing' => Casing::Camel,
     'column_name_casing' => Casing::Camel,
+    // true is equivalent to ['method' => 'import', 'import_path' => '@/wayfinder'].
+    // Use ['method' => 'global'] when Wayfinder namespaces are globally available.
     'use_wayfinder' => false,
     'connection' => null,
     'allow_multiple_connections' => false,

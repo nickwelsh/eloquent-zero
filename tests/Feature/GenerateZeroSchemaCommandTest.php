@@ -169,6 +169,35 @@ it('generates enum columns and one-to-many relationships from eloquent models', 
         ->toContain('relationships: [todoListRelationships, todoItemRelationships]');
 });
 
+it('imports wayfinder namespaces used by enum casts', function () {
+    $outputPath = sys_get_temp_dir().'/eloquent-zero-wayfinder-enum-test.ts';
+
+    File::delete($outputPath);
+
+    DB::statement('DROP TYPE IF EXISTS todo_status');
+    DB::statement("CREATE TYPE todo_status AS ENUM ('active', 'backlog', 'archived')");
+
+    Schema::create('todo_lists', function (Blueprint $table): void {
+        $table->string('id')->primary();
+        $table->string('name');
+        $table->timestamp('created_at');
+        $table->timestamp('updated_at');
+    });
+
+    DB::statement('ALTER TABLE todo_lists ADD COLUMN status todo_status NOT NULL');
+
+    config()->set('eloquent-zero.output_path', $outputPath);
+    config()->set('eloquent-zero.use_wayfinder', true);
+
+    $this->artisan('generate:zero-schema', [
+        '--model' => [TodoList::class],
+    ])->assertSuccessful();
+
+    expect(File::get($outputPath))
+        ->toContain("import type { NickWelsh } from '@/wayfinder/types';")
+        ->toContain('status: enumeration<NickWelsh.EloquentZero.Tests.Fixtures.Enums.Status>()');
+});
+
 it('discovers models from configured directories and skips ignored models in opt-out mode', function () {
     $outputPath = sys_get_temp_dir().'/eloquent-zero-discovery-test.ts';
 
@@ -612,8 +641,61 @@ it('generates wayfinder custom json column types', function () {
     ])->assertSuccessful();
 
     expect(File::get($outputPath))
+        ->toContain("import type { NickWelsh } from '@/wayfinder/types';")
         ->toContain('metadata: json<NickWelsh.EloquentZero.Tests.Fixtures.Types.RelationMetadata>().optional()')
         ->not->toContain('import type { RelationMetadata }');
+});
+
+it('supports a custom wayfinder import path without an explicit method', function () {
+    $outputPath = sys_get_temp_dir().'/eloquent-zero-json-wayfinder-custom-import-test.ts';
+
+    File::delete($outputPath);
+
+    Schema::create('json_typed_things', function (Blueprint $table): void {
+        $table->string('id')->primary();
+        $table->json('metadata')->nullable();
+        $table->string('name');
+    });
+
+    config()->set('eloquent-zero.output_path', $outputPath);
+    config()->set('eloquent-zero.use_wayfinder', [
+        'import_path' => '~/generated/wayfinder',
+    ]);
+
+    $this->artisan('generate:zero-schema', [
+        '--model' => [WayfinderJsonTypedThing::class],
+    ])->assertSuccessful();
+
+    expect(File::get($outputPath))
+        ->toContain("import type { NickWelsh } from '~/generated/wayfinder/types';")
+        ->toContain('metadata: json<NickWelsh.EloquentZero.Tests.Fixtures.Types.RelationMetadata>().optional()');
+});
+
+it('supports globally available wayfinder types and ignores the import path', function () {
+    $outputPath = sys_get_temp_dir().'/eloquent-zero-json-wayfinder-global-test.ts';
+
+    File::delete($outputPath);
+
+    Schema::create('json_typed_things', function (Blueprint $table): void {
+        $table->string('id')->primary();
+        $table->json('metadata')->nullable();
+        $table->string('name');
+    });
+
+    config()->set('eloquent-zero.output_path', $outputPath);
+    config()->set('eloquent-zero.use_wayfinder', [
+        'method' => 'global',
+        'import_path' => '~/ignored',
+    ]);
+
+    $this->artisan('generate:zero-schema', [
+        '--model' => [WayfinderJsonTypedThing::class],
+    ])->assertSuccessful();
+
+    expect(File::get($outputPath))
+        ->toContain('metadata: json<NickWelsh.EloquentZero.Tests.Fixtures.Types.RelationMetadata>().optional()')
+        ->not->toContain('~/ignored')
+        ->not->toContain('import type { NickWelsh }');
 });
 
 it('throws when custom json class type has no import and wayfinder is disabled', function () {
@@ -674,6 +756,7 @@ it('infers json column types from class casts when wayfinder is enabled', functi
     ])->assertSuccessful();
 
     expect(File::get($outputPath))
+        ->toContain("import type { NickWelsh } from '@/wayfinder/types';")
         ->toContain('metadata: json<NickWelsh.EloquentZero.Tests.Fixtures.Types.SettingsData>().optional()');
 });
 

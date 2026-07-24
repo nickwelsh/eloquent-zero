@@ -25,6 +25,7 @@ use NickWelsh\EloquentZero\Attributes\ZeroJson;
 use NickWelsh\EloquentZero\Attributes\ZeroName;
 use NickWelsh\EloquentZero\Support\Casing;
 use NickWelsh\EloquentZero\Support\Mode;
+use NickWelsh\EloquentZero\Support\WayfinderConfig;
 use ReflectionClass;
 use ReflectionMethod;
 use ReflectionNamedType;
@@ -32,6 +33,13 @@ use RuntimeException;
 
 final class ZeroSchemaGenerator
 {
+    private ?WayfinderConfig $wayfinder = null;
+
+    /**
+     * @var array<int, string>
+     */
+    private array $wayfinderNamespaces = [];
+
     /**
      * @param  array<int, class-string<Model>>  $explicitModels
      */
@@ -41,6 +49,9 @@ final class ZeroSchemaGenerator
         ?string $forcedConnection,
         OutputStyle $output,
     ): GeneratedSchemaResult {
+        $this->wayfinder = WayfinderConfig::from(config('eloquent-zero.use_wayfinder', false));
+        $this->wayfinderNamespaces = [];
+
         $models = $this->resolveModels($explicitModels, $output);
         $configuredTables = $this->configuredTables();
 
@@ -394,10 +405,8 @@ final class ZeroSchemaGenerator
                 throw new RuntimeException("Enum cast [{$cast}] does not match database enum [{$column['type_name']}].");
             }
 
-            if (config('eloquent-zero.use_wayfinder', false)) {
-                $wayfinderType = str_replace('\\', '.', $cast);
-
-                return "enumeration<{$wayfinderType}>()";
+            if ($this->wayfinder !== null) {
+                return 'enumeration<'.$this->wayfinderType($cast).'>()';
             }
 
             return 'enumeration<'.$this->renderEnumerationType($enumValues).'>()';
@@ -414,11 +423,11 @@ final class ZeroSchemaGenerator
                 return "json<{$jsonType['type']}>()";
             }
 
-            if (config('eloquent-zero.use_wayfinder', false) && is_string($cast)) {
+            if ($this->wayfinder !== null && is_string($cast)) {
                 $castClass = Str::before($cast, ':');
 
                 if (class_exists($castClass)) {
-                    return 'json<'.str_replace('\\', '.', $castClass).'>()';
+                    return 'json<'.$this->wayfinderType($castClass).'>()';
                 }
             }
         }
@@ -493,6 +502,11 @@ final class ZeroSchemaGenerator
     private function renderTypeImports(array $tables): array
     {
         $imports = [];
+        $wayfinderImportSource = $this->wayfinder?->importSource();
+
+        if ($wayfinderImportSource !== null && $this->wayfinderNamespaces !== []) {
+            $imports[$wayfinderImportSource] = $this->wayfinderNamespaces;
+        }
 
         foreach ($tables as $table) {
             foreach ($table['imports'] ?? [] as $source => $types) {
@@ -1300,17 +1314,30 @@ final class ZeroSchemaGenerator
                 continue;
             }
 
-            if (! config('eloquent-zero.use_wayfinder', false)) {
+            if ($this->wayfinder === null) {
                 throw new RuntimeException("ZeroJson on [{$model->getTable()}.{$instance->column}] requires an import when use_wayfinder is false.");
             }
 
             $jsonTypes[$instance->column] = [
-                'type' => str_replace('\\', '.', $instance->type),
+                'type' => $this->wayfinderType($instance->type),
                 'import' => null,
             ];
         }
 
         return $jsonTypes;
+    }
+
+    private function wayfinderType(string $type): string
+    {
+        $type = ltrim($type, '\\');
+
+        if ($this->wayfinder?->importSource() !== null) {
+            $namespace = Str::before($type, '\\');
+            $this->wayfinderNamespaces[] = $namespace;
+            $this->wayfinderNamespaces = array_values(array_unique($this->wayfinderNamespaces));
+        }
+
+        return str_replace('\\', '.', $type);
     }
 
     private function typescriptImportName(string $type): string

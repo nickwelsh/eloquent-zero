@@ -68,6 +68,7 @@ return [
     'output_path' => resource_path('js/zero/schema.ts'),
     'table_name_casing' => Casing::Camel,
     'column_name_casing' => Casing::Camel,
+    // false, true, or custom Wayfinder type resolution
     'use_wayfinder' => false,
     'connection' => null,
     'allow_multiple_connections' => false,
@@ -229,7 +230,7 @@ import type { RelationMetadata } from '@/types/crm';
 metadata: json<RelationMetadata>()
 ```
 
-When `use_wayfinder` is enabled, you may pass a PHP class without an import:
+When `use_wayfinder` is enabled, you may pass a PHP class without an attribute-level import:
 
 ```php
 #[ZeroJson('metadata', App\Data\RelationMetadata::class)]
@@ -239,10 +240,43 @@ class PartyRelation extends Model {}
 That generates:
 
 ```ts
+import type { App } from '@/wayfinder/types';
+
 metadata: json<App.Data.RelationMetadata>()
 ```
 
 If `import` is set, the imported TypeScript type is always used, even when `use_wayfinder` is enabled. Without `use_wayfinder`, `import` is required.
+
+`true` uses Wayfinder's normal module exports:
+
+```php
+'use_wayfinder' => true,
+```
+
+This is equivalent to:
+
+```php
+'use_wayfinder' => [
+    'method' => 'import',
+    'import_path' => '@/wayfinder',
+],
+```
+
+The `method` defaults to `import`, so the Wayfinder output directory may be overridden alone:
+
+```php
+'use_wayfinder' => [
+    'import_path' => '~/generated/wayfinder',
+],
+```
+
+Use `global` only when the project exposes Wayfinder namespaces globally. `import_path` is ignored for this method.
+
+```php
+'use_wayfinder' => [
+    'method' => 'global',
+],
+```
 
 ### `#[ZeroExclude([...])]`
 
