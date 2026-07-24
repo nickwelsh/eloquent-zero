@@ -348,6 +348,75 @@ it('warns and skips polymorphic many-to-many relationships', function () {
         ->not->toContain('roles: many(');
 });
 
+it('generates discriminator-safe polymorphic helper relationships', function () {
+    $outputPath = sys_get_temp_dir().'/eloquent-zero-polymorphic-helpers-test.ts';
+
+    File::delete($outputPath);
+
+    Schema::create('polymorphic_users', function (Blueprint $table): void {
+        $table->string('id')->primary();
+    });
+
+    Schema::create('roles', function (Blueprint $table): void {
+        $table->string('id')->primary();
+    });
+
+    Schema::create('model_has_roles', function (Blueprint $table): void {
+        $table->string('role_id');
+        $table->string('model_type');
+        $table->string('model_id');
+        $table->primary(['role_id', 'model_id', 'model_type']);
+        $table->foreign('role_id')->references('id')->on('roles');
+    });
+
+    config()->set('eloquent-zero.output_path', $outputPath);
+    config()->set('eloquent-zero.generate_polymorphic_helpers', true);
+
+    $this->artisan('generate:zero-schema', [
+        '--model' => [PolymorphicUser::class, PolymorphicRole::class],
+    ])->assertSuccessful();
+
+    expect(File::get($outputPath))
+        ->toContain("const modelHasRole = table('modelHasRoles')")
+        ->toContain('__zeroMorphRolesPivot: many({')
+        ->toContain('destSchema: modelHasRole')
+        ->toContain("destField: ['modelId']")
+        ->toContain('__zeroMorphPolymorphicUsersRolesRelated: one({')
+        ->toContain("sourceField: ['roleId']")
+        ->toContain('destSchema: role');
+});
+
+it('generates Zod row coercion schemas', function () {
+    $outputPath = sys_get_temp_dir().'/eloquent-zero-zod-test.ts';
+
+    File::delete($outputPath);
+
+    Schema::create('todo_lists', function (Blueprint $table): void {
+        $table->string('id')->primary();
+        $table->boolean('enabled');
+        $table->bigInteger('visits');
+        $table->timestamp('created_at');
+        $table->json('metadata')->nullable();
+    });
+
+    config()->set('eloquent-zero.output_path', $outputPath);
+    config()->set('eloquent-zero.generate_zod_schemas', true);
+
+    $this->artisan('generate:zero-schema', [
+        '--model' => [TodoList::class],
+    ])->assertSuccessful();
+
+    expect(File::get($outputPath))
+        ->toContain("import { z } from 'zod';")
+        ->toContain('export const todoListSchema = z.object({')
+        ->toContain('id: z.coerce.number()')
+        ->toContain('enabled: z.coerce.boolean()')
+        ->toContain('visits: z.coerce.bigint()')
+        ->toContain('createdAt: z.coerce.date()')
+        ->toContain('metadata: z.unknown().nullish()')
+        ->toContain('export type ParsedTodoList = z.output<typeof todoListSchema>;');
+});
+
 it('generates configured tables without models', function () {
     $outputPath = sys_get_temp_dir().'/eloquent-zero-configured-tables-test.ts';
 

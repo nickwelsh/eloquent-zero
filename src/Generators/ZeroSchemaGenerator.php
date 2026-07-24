@@ -25,6 +25,7 @@ use NickWelsh\EloquentZero\Attributes\ZeroJson;
 use NickWelsh\EloquentZero\Attributes\ZeroName;
 use NickWelsh\EloquentZero\Support\Casing;
 use NickWelsh\EloquentZero\Support\Mode;
+use NickWelsh\EloquentZero\Support\MorphRelationship;
 use NickWelsh\EloquentZero\Support\WayfinderConfig;
 use ReflectionClass;
 use ReflectionMethod;
@@ -338,6 +339,7 @@ final class ZeroSchemaGenerator
                 'name' => $this->transformName($column['name'], config('eloquent-zero.column_name_casing')),
                 'serverName' => $column['name'],
                 'type' => $type,
+                'zod' => $this->resolveZodColumnType($casts, $column, $enumTypes),
                 'optional' => (bool) $column['nullable'] || $column['default'] !== null,
             ];
         }
@@ -475,6 +477,61 @@ final class ZeroSchemaGenerator
     }
 
     /**
+     * @param  array{name: string, type: string, type_name: string, nullable: bool, default: mixed, auto_increment: bool, comment: ?string, generation: ?array}  $column
+     * @param  array<string, list<string>>  $enumTypes
+     */
+    private function resolveZodColumnType(array $casts, array $column, array $enumTypes): string
+    {
+        $cast = $casts[$column['name']] ?? null;
+
+        if (is_string($cast) && enum_exists($cast) && is_subclass_of($cast, BackedEnum::class)) {
+            return $this->renderZodEnum(array_map(
+                static fn (BackedEnum $case): string => (string) $case->value,
+                $cast::cases(),
+            ));
+        }
+
+        if (array_key_exists($column['type_name'], $enumTypes)) {
+            return $this->renderZodEnum($enumTypes[$column['type_name']]);
+        }
+
+        $castName = is_string($cast) ? Str::before($cast, ':') : null;
+        $castType = match ($castName) {
+            'bool', 'boolean' => 'boolean',
+            'int', 'integer', 'real', 'float', 'double', 'decimal' => 'number',
+            'date', 'datetime', 'immutable_date', 'immutable_datetime' => 'date',
+            'string' => 'string',
+            default => null,
+        };
+
+        $type = $castType ?? match ($column['type_name']) {
+            'bool', 'boolean' => 'boolean',
+            'int8', 'bigint', 'bigserial', 'serial8' => 'bigint',
+            'int2', 'smallint', 'int4', 'integer', 'serial', 'serial4',
+            'decimal', 'numeric', 'float4', 'real', 'float8', 'double precision' => 'number',
+            'date', 'time', 'time without time zone', 'timetz', 'time with time zone',
+            'timestamp', 'timestamptz', 'timestamp without time zone', 'timestamp with time zone' => 'date',
+            'json', 'jsonb' => 'json',
+            default => 'string',
+        };
+
+        return match ($type) {
+            'boolean' => 'z.coerce.boolean()',
+            'bigint' => 'z.coerce.bigint()',
+            'number' => 'z.coerce.number()',
+            'date' => 'z.coerce.date()',
+            'json' => 'z.unknown()',
+            default => 'z.coerce.string()',
+        };
+    }
+
+    /** @param list<string> $values */
+    private function renderZodEnum(array $values): string
+    {
+        return 'z.enum('.json_encode($values, JSON_THROW_ON_ERROR).')';
+    }
+
+    /**
      * @param  array<string, array{type: string, import: string|null}>  $jsonTypes
      * @return array<string, array<int, string>>
      */
@@ -535,6 +592,10 @@ final class ZeroSchemaGenerator
             "import { createBuilder, createSchema, table, string, number, boolean, json, enumeration, relationships } from '@rocicorp/zero';",
             "import type { Row } from '@rocicorp/zero';",
         ];
+
+        if (config('eloquent-zero.generate_zod_schemas', false) === true) {
+            $lines[] = "import { z } from 'zod';";
+        }
 
         foreach ($this->renderTypeImports($tables) as $importLine) {
             $lines[] = $importLine;
@@ -656,6 +717,25 @@ final class ZeroSchemaGenerator
             $lines[] = "export type {$typeName} = Schema['{$table['name']}'];";
         }
 
+        if (config('eloquent-zero.generate_zod_schemas', false) === true) {
+            $lines[] = '';
+            foreach ($tables as $table) {
+                $schemaName = $table['variable'].'Schema';
+                $typeName = 'Parsed'.Str::studly($table['variable']);
+                $lines[] = "export const {$schemaName} = z.object({";
+                foreach ($table['columns'] as $column) {
+                    $key = preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $column['name']) === 1
+                        ? $column['name']
+                        : "'{$column['name']}'";
+                    $zod = $column['zod'].($column['optional'] ? '.nullish()' : '');
+                    $lines[] = "  {$key}: {$zod},";
+                }
+                $lines[] = '});';
+                $lines[] = "export type {$typeName} = z.output<typeof {$schemaName}>;";
+                $lines[] = '';
+            }
+        }
+
         $lines[] = '';
         $lines[] = 'export const zql = createBuilder(schema);';
         $lines[] = '';
@@ -704,19 +784,104 @@ final class ZeroSchemaGenerator
                 }
             }
 
-            if ($relations === []) {
-                continue;
+            if ($relations !== []) {
+                $relationshipGroups[] = [
+                    'variable' => $table['variable'].'Relationships',
+                    'tableVariable' => $table['variable'],
+                    'kind' => 'group',
+                    'relations' => $relations,
+                ];
             }
+        }
 
-            $relationshipGroups[] = [
-                'variable' => $table['variable'].'Relationships',
-                'tableVariable' => $table['variable'],
-                'kind' => 'group',
-                'relations' => $relations,
-            ];
+        if (config('eloquent-zero.generate_polymorphic_helpers', false) === true) {
+            $relationshipGroups = $this->appendMorphRelationshipGroups(
+                $models,
+                $tableMap,
+                $relationshipGroups,
+                $connectionName,
+            );
         }
 
         return $relationshipGroups;
+    }
+
+    /**
+     * @param  array<int, Model>  $models
+     * @param  Collection<(int|string), array<string, mixed>>  $tableMap
+     * @param  array<int, array<string, mixed>>  $groups
+     * @return array<int, array<string, mixed>>
+     */
+    private function appendMorphRelationshipGroups(array $models, Collection $tableMap, array $groups, ?string $connectionName): array
+    {
+        /** @var array<string, array<string, mixed>> $byTable */
+        $byTable = collect($groups)->keyBy('tableVariable')->all();
+
+        foreach ($models as $model) {
+            $parentTable = $tableMap->get($model->getTable());
+            if ($parentTable === null) {
+                continue;
+            }
+
+            foreach ($this->relationMethods($model) as $method) {
+                $relation = $model->{$method->getName()}();
+                if (! $relation instanceof MorphToMany) {
+                    continue;
+                }
+
+                $pivotTable = $tableMap->get($relation->getTable());
+                $relatedTable = $tableMap->get($relation->getRelated()->getTable());
+                if ($pivotTable === null || $relatedTable === null) {
+                    continue;
+                }
+
+                $this->assertTableHasColumns(
+                    $relation->getTable(),
+                    [$relation->getForeignPivotKeyName(), $relation->getRelatedPivotKeyName(), $relation->getMorphType()],
+                    $connectionName,
+                    class_basename($model).'::'.$method->getName(),
+                );
+
+                $parentGroup = $byTable[$parentTable['variable']] ?? [
+                    'variable' => $parentTable['variable'].'Relationships',
+                    'tableVariable' => $parentTable['variable'],
+                    'kind' => 'group',
+                    'relations' => [],
+                ];
+                $parentGroup['relations'][] = [
+                    'name' => MorphRelationship::pivot($method->getName()),
+                    'helper' => 'many',
+                    'chain' => [[
+                        'source' => [$this->transformName($relation->getParentKeyName(), config('eloquent-zero.column_name_casing'))],
+                        'destVariable' => $pivotTable['variable'],
+                        'dest' => [$this->transformName($relation->getForeignPivotKeyName(), config('eloquent-zero.column_name_casing'))],
+                    ]],
+                ];
+                $byTable[$parentTable['variable']] = $parentGroup;
+
+                $pivotGroup = $byTable[$pivotTable['variable']] ?? [
+                    'variable' => $pivotTable['variable'].'Relationships',
+                    'tableVariable' => $pivotTable['variable'],
+                    'kind' => 'group',
+                    'relations' => [],
+                ];
+                $relatedName = MorphRelationship::related($model, $method->getName());
+                if (! collect($pivotGroup['relations'])->contains(fn (array $item): bool => $item['name'] === $relatedName)) {
+                    $pivotGroup['relations'][] = [
+                        'name' => $relatedName,
+                        'helper' => 'one',
+                        'chain' => [[
+                            'source' => [$this->transformName($relation->getRelatedPivotKeyName(), config('eloquent-zero.column_name_casing'))],
+                            'destVariable' => $relatedTable['variable'],
+                            'dest' => [$this->transformName($relation->getRelatedKeyName(), config('eloquent-zero.column_name_casing'))],
+                        ]],
+                    ];
+                }
+                $byTable[$pivotTable['variable']] = $pivotGroup;
+            }
+        }
+
+        return array_values($byTable);
     }
 
     /**
@@ -751,7 +916,9 @@ final class ZeroSchemaGenerator
         OutputStyle $output,
     ): ?array {
         return match (true) {
-            $relation instanceof MorphTo || $relation instanceof MorphOneOrMany || $relation instanceof MorphToMany => tap(null, fn () => $this->emitWarning($output, "Unsupported polymorphic relation [{$this->relationLabel($relation, $relationName)}]; Zero relationships cannot express morph type constraints.")),
+            $relation instanceof MorphTo || $relation instanceof MorphOneOrMany || $relation instanceof MorphToMany => config('eloquent-zero.generate_polymorphic_helpers', false) === true
+                ? null
+                : tap(null, fn () => $this->emitWarning($output, "Unsupported polymorphic relation [{$this->relationLabel($relation, $relationName)}]; Zero relationships cannot express morph type constraints.")),
             $relation instanceof BelongsTo => $this->buildBelongsToRelation($relationName, $relation, $selectedTables, $tableMap, $connectionName, $output),
             $relation instanceof HasMany => $this->buildHasOneOrManyRelation($relationName, $relation, 'many', $selectedTables, $tableMap, $connectionName, $output),
             $relation instanceof HasOne => $this->buildHasOneOrManyRelation($relationName, $relation, 'one', $selectedTables, $tableMap, $connectionName, $output),
@@ -1084,7 +1251,7 @@ final class ZeroSchemaGenerator
                     continue;
                 }
 
-                if ($relation instanceof MorphToMany) {
+                if ($relation instanceof MorphToMany && config('eloquent-zero.generate_polymorphic_helpers', false) !== true) {
                     continue;
                 }
 
@@ -1257,12 +1424,15 @@ final class ZeroSchemaGenerator
                 }
 
                 if ($relation instanceof BelongsToMany) {
-                    if ($relation instanceof MorphToMany) {
+                    if ($relation instanceof MorphToMany && config('eloquent-zero.generate_polymorphic_helpers', false) !== true) {
                         continue;
                     }
 
                     $requiredColumns[$relation->getTable()][] = $relation->getForeignPivotKeyName();
                     $requiredColumns[$relation->getTable()][] = $relation->getRelatedPivotKeyName();
+                    if ($relation instanceof MorphToMany) {
+                        $requiredColumns[$relation->getTable()][] = $relation->getMorphType();
+                    }
                 }
             }
         }
